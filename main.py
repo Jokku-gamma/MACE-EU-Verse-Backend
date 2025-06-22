@@ -3,10 +3,15 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from github import Github, InputGitTreeElement
 from dotenv import load_dotenv
+from flask_cors import CORS # Import CORS
+
+# Load environment variables from .env for local development
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app) # Enable CORS for all routes by default
 
+# --- GitHub Configuration ---
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO_OWNER = os.getenv("GITHUB_REPO_OWNER")
 GITHUB_REPO_NAME = os.getenv("GITHUB_REPO_NAME")
@@ -28,6 +33,7 @@ if GITHUB_TOKEN and GITHUB_REPO_OWNER and GITHUB_REPO_NAME:
 else:
     print("GitHub API client not initialized due to missing environment variables.")
 
+# --- HTML Template (Your existing template) ---
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -321,6 +327,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+# --- Flask Route for generating and uploading verse ---
 @app.route('/generate_and_upload_verse', methods=['POST'])
 def generate_and_upload_verse():
     if repo is None:
@@ -333,7 +341,7 @@ def generate_and_upload_verse():
     malayalam_ref = data.get('malayalam_ref')
     english_verse = data.get('english_verse')
     english_ref = data.get('english_ref')
-    message_title = data.get('message_title') # Re-added message_title
+    message_title = data.get('message_title')
     message_paragraph1 = data.get('message_paragraph1')
     message_paragraph2 = data.get('message_paragraph2')
 
@@ -342,7 +350,6 @@ def generate_and_upload_verse():
         return jsonify({"success": False, "message": "Missing required fields in request data."}), 400
 
     try:
-        
         date_obj = datetime.strptime(manual_date_str, "%B %d, %Y")
     except ValueError:
         return jsonify({"success": False, "message": f"Invalid date format: {manual_date_str}. Expected 'Month Day, Year'."}), 400
@@ -352,22 +359,24 @@ def generate_and_upload_verse():
     github_file_path = f"{GITHUB_FILE_PATH_PREFIX}/bible_verse_{file_date_format}.html"
 
     try:
+        # --- Duplicate Prevention Logic ---
         try:
             repo.get_contents(github_file_path, ref="main")
             return jsonify({
                 "success": False,
                 "message": f"A daily verse for {display_date} already exists. To update it, use a specific update mechanism (not this endpoint)."
-            }), 409 # 409 Conflict status code
+            }), 409
         except Exception as e:
             if "Not Found" not in str(e):
                 raise e
+
         html_content = HTML_TEMPLATE.format(
             display_date=display_date,
             malayalam_verse=malayalam_verse,
             malayalam_ref=malayalam_ref,
             english_verse=english_verse,
             english_ref=english_ref,
-            message_title=message_title, # Now included
+            message_title=message_title,
             message_paragraph1=message_paragraph1,
             message_paragraph2=message_paragraph2
         )
@@ -387,11 +396,12 @@ def generate_and_upload_verse():
     except Exception as e:
         print(f"GitHub API Error: {e}")
         return jsonify({"success": False, "message": f"Failed to push to GitHub: {str(e)}"}), 500
+
 @app.route('/')
 def health_check():
     if repo:
         try:
-            repo.get_branch("main") # A simple operation to confirm connection
+            repo.get_branch("main")
             return jsonify({"status": "MACE EU Verse Generator Backend is running and connected to GitHub."}), 200
         except Exception as e:
             return jsonify({"status": f"MACE EU Verse Generator Backend is running, but GitHub connection failed: {e}"}), 500
