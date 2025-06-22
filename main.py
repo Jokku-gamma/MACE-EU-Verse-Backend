@@ -350,11 +350,11 @@ def generate_and_upload_verse():
         return jsonify({"success": False, "message": "Missing required fields in request data."}), 400
 
     try:
-        date_obj = datetime.strptime(manual_date_str, "%B %d, %Y")
+        date_obj = datetime.strptime(manual_date_str, "%B %d,%Y")
     except ValueError:
         return jsonify({"success": False, "message": f"Invalid date format: {manual_date_str}. Expected 'Month Day, Year'."}), 400
 
-    display_date = date_obj.strftime("%B %d, %Y")
+    display_date = date_obj.strftime("%B %d,%Y")
     file_date_format = date_obj.strftime("%Y-%m-%d")
     github_file_path = f"{GITHUB_FILE_PATH_PREFIX}/bible_verse_{file_date_format}.html"
 
