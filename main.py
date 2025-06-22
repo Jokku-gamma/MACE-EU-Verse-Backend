@@ -1,9 +1,10 @@
 import os
+import re # Import regex for parsing filenames
 from datetime import datetime
 from flask import Flask, request, jsonify
 from github import Github, InputGitTreeElement
 from dotenv import load_dotenv
-from flask_cors import CORS # Import CORS
+from flask_cors import CORS
 
 # Load environment variables from .env for local development
 load_dotenv()
@@ -17,10 +18,7 @@ GITHUB_REPO_OWNER = os.getenv("GITHUB_REPO_OWNER")
 GITHUB_REPO_NAME = os.getenv("GITHUB_REPO_NAME")
 GITHUB_FILE_PATH_PREFIX = "daily-verses" 
 
-if not all([GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME]):
-    print("Missing GitHub environment variables. Please set GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME.")
-    pass 
-
+# Initialize GitHub API client
 g = None
 repo = None
 if GITHUB_TOKEN and GITHUB_REPO_OWNER and GITHUB_REPO_NAME:
@@ -30,8 +28,12 @@ if GITHUB_TOKEN and GITHUB_REPO_OWNER and GITHUB_REPO_NAME:
         print(f"Successfully connected to GitHub repo: {repo.full_name}")
     except Exception as e:
         print(f"Error connecting to GitHub repository during initialization: {e}")
+        print("Please ensure GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME are set correctly and the token has 'repo' scope.")
 else:
     print("GitHub API client not initialized due to missing environment variables.")
+
+# Regex to extract date from filename like 'bible_verse_YYYY-MM-DD.html'
+FILE_DATE_PATTERN = re.compile(r"bible_verse_(\d{4}-\d{2}-\d{2})\.html")
 
 # --- HTML Template (Your existing template) ---
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -350,26 +352,30 @@ def generate_and_upload_verse():
         return jsonify({"success": False, "message": "Missing required fields in request data."}), 400
 
     try:
-        date_obj = datetime.strptime(manual_date_str, "%B %d,%Y")
+        date_obj = datetime.strptime(manual_date_str, "%B %d, %Y")
     except ValueError:
         return jsonify({"success": False, "message": f"Invalid date format: {manual_date_str}. Expected 'Month Day, Year'."}), 400
 
-    display_date = date_obj.strftime("%B %d,%Y")
+    display_date = date_obj.strftime("%B %d, %Y")
     file_date_format = date_obj.strftime("%Y-%m-%d")
     github_file_path = f"{GITHUB_FILE_PATH_PREFIX}/bible_verse_{file_date_format}.html"
 
     try:
         # --- Duplicate Prevention Logic ---
         try:
+            # Attempt to get file contents. If it succeeds, the file exists.
             repo.get_contents(github_file_path, ref="main")
             return jsonify({
                 "success": False,
-                "message": f"A daily verse for {display_date} already exists. To update it, use a specific update mechanism (not this endpoint)."
-            }), 409
+                "message": f"A daily verse for {display_date} already exists. Please choose another date."
+            }), 409 # 409 Conflict status code for duplicate resource
         except Exception as e:
+            # If "Not Found" error, it means the file doesn't exist, and we can proceed.
             if "Not Found" not in str(e):
-                raise e
+                raise e # Re-raise other unexpected GitHub API errors
 
+        # If we reach here, the file does NOT exist, so proceed to create it.
+        # Generate the HTML content
         html_content = HTML_TEMPLATE.format(
             display_date=display_date,
             malayalam_verse=malayalam_verse,
@@ -397,6 +403,37 @@ def generate_and_upload_verse():
         print(f"GitHub API Error: {e}")
         return jsonify({"success": False, "message": f"Failed to push to GitHub: {str(e)}"}), 500
 
+# --- NEW ENDPOINT: Get existing verse dates ---
+@app.route('/get_existing_verse_dates', methods=['GET'])
+def get_existing_verse_dates():
+    if repo is None:
+        return jsonify({"success": False, "message": "Backend not connected to GitHub repository. Check environment variables."}), 500
+
+    existing_dates = []
+    try:
+        # Get contents of the daily-verses directory
+        contents = repo.get_contents(GITHUB_FILE_PATH_PREFIX, ref="main")
+        for content in contents:
+            if content.type == 'file' and content.name.endswith('.html'):
+                match = FILE_DATE_PATTERN.match(content.name)
+                if match:
+                    iso_date = match.group(1) # YYYY-MM-DD
+                    try:
+                        # Convert to MMMM dd, YYYY format to match Flutter's date picker string
+                        formatted_date = datetime.strptime(iso_date, "%Y-%m-%d").strftime("%B %d, %Y")
+                        existing_dates.append(formatted_date)
+                    except ValueError:
+                        print(f"Warning: Could not parse date from filename: {content.name}")
+        return jsonify({"success": True, "dates": existing_dates}), 200
+
+    except Exception as e:
+        if "Not Found" in str(e):
+            # Directory does not exist yet, so no existing dates
+            return jsonify({"success": True, "dates": []}), 200
+        print(f"GitHub API Error when fetching existing dates: {e}")
+        return jsonify({"success": False, "message": f"Failed to fetch existing dates from GitHub: {str(e)}"}), 500
+
+# --- Health Check Endpoint ---
 @app.route('/')
 def health_check():
     if repo:
@@ -407,7 +444,6 @@ def health_check():
             return jsonify({"status": f"MACE EU Verse Generator Backend is running, but GitHub connection failed: {e}"}), 500
     else:
         return jsonify({"status": "MACE EU Verse Generator Backend is running, but GitHub client not initialized (check env vars)."}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
