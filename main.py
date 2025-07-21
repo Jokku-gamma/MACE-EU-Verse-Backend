@@ -1,11 +1,11 @@
 import os
-import re # Import regex for parsing filenames
+import re
 from datetime import datetime
 from flask import Flask, request, jsonify
-from github import Github, InputGitTreeElement, UnknownObjectException # Import UnknownObjectException
+from github import Github, InputGitTreeElement, UnknownObjectException
 from dotenv import load_dotenv
 from flask_cors import CORS
-from bs4 import BeautifulSoup # Import BeautifulSoup for HTML parsing
+from bs4 import BeautifulSoup
 
 # Load environment variables from .env for local development
 load_dotenv()
@@ -364,21 +364,17 @@ def generate_and_upload_verse():
     try:
         # --- Duplicate Prevention Logic ---
         try:
-            # Attempt to get file contents. If it succeeds, the file exists.
             repo.get_contents(github_file_path, ref="main")
             return jsonify({
                 "success": False,
                 "message": f"A daily verse for {display_date} already exists. Please choose another date."
-            }), 409 # 409 Conflict status code for duplicate resource
-        except UnknownObjectException: # Specific exception for file not found
-            pass # File not found, proceed to create it
+            }), 409
+        except UnknownObjectException:
+            pass
         except Exception as e:
-            # Re-raise other unexpected GitHub API errors
             print(f"GitHub API Error checking file existence: {e}")
             raise e
 
-        # If we reach here, the file does NOT exist, so proceed to create it.
-        # Generate the HTML content
         html_content = HTML_TEMPLATE.format(
             display_date=display_date,
             malayalam_verse=malayalam_verse,
@@ -414,22 +410,20 @@ def get_existing_verse_dates():
 
     existing_dates = []
     try:
-        # Get contents of the daily-verses directory
         contents = repo.get_contents(GITHUB_FILE_PATH_PREFIX, ref="main")
         for content in contents:
             if content.type == 'file' and content.name.endswith('.html'):
                 match = FILE_DATE_PATTERN.match(content.name)
                 if match:
-                    iso_date = match.group(1) # YYYY-MM-DD
+                    iso_date = match.group(1)
                     try:
-                        # Convert to MMMM dd, YYYY format to match Flutter's date picker string
                         formatted_date = datetime.strptime(iso_date, "%Y-%m-%d").strftime("%B %d, %Y")
                         existing_dates.append(formatted_date)
                     except ValueError:
                         print(f"Warning: Could not parse date from filename: {content.name}")
         return jsonify({"success": True, "dates": existing_dates}), 200
 
-    except UnknownObjectException: # Directory does not exist yet
+    except UnknownObjectException:
         return jsonify({"success": True, "dates": []}), 200
     except Exception as e:
         print(f"GitHub API Error when fetching existing dates: {e}")
@@ -441,12 +435,11 @@ def get_verse_content_by_date():
     if repo is None:
         return jsonify({"success": False, "message": "Backend not connected to GitHub repository. Check environment variables."}), 500
 
-    date_str_frontend = request.args.get('date') # e.g., "July 21, 2025"
+    date_str_frontend = request.args.get('date')
     if not date_str_frontend:
         return jsonify({"success": False, "message": "Date parameter is required"}), 400
 
     try:
-        # Convert frontend date string to YYYY-MM-DD format for filename
         date_obj = datetime.strptime(date_str_frontend, "%B %d, %Y")
         file_date_format = date_obj.strftime("%Y-%m-%d")
         github_file_path = f"{GITHUB_FILE_PATH_PREFIX}/bible_verse_{file_date_format}.html"
@@ -454,27 +447,32 @@ def get_verse_content_by_date():
         return jsonify({"success": False, "message": f"Invalid date format: {date_str_frontend}. Expected 'Month DD, YYYY'."}), 400
 
     try:
-        # Fetch the content of the HTML file from GitHub
         file_content_obj = repo.get_contents(github_file_path, ref="main")
         html_content = file_content_obj.decoded_content.decode('utf-8')
 
-        # Parse the HTML content using BeautifulSoup
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        # Extract data based on your HTML structure
-        # Note: This is highly dependent on your HTML_TEMPLATE structure.
-        # If your template changes, this parsing logic must also change.
-        malayalam_verse = soup.find('div', class_='bible-verse-block').find_all('blockquote')[0].get_text(strip=True)
-        malayalam_ref = soup.find('div', class_='bible-verse-block').find_all('cite')[0].get_text(strip=True).replace('—', '')
-        english_verse = soup.find('div', class_='bible-verse-block').find_all('blockquote')[1].get_text(strip=True).strip('"') # Remove quotes
-        english_ref = soup.find('div', class_='bible-verse-block').find_all('cite')[1].get_text(strip=True).replace('—', '')
-        message_title = soup.find('div', class_='message-section').find('h3').get_text(strip=True).replace(':', '')
+        malayalam_verse_elem = soup.find('div', class_='bible-verse-block').find_all('blockquote')[0]
+        malayalam_verse = malayalam_verse_elem.get_text(strip=True) if malayalam_verse_elem else ""
+
+        malayalam_ref_elem = soup.find('div', class_='bible-verse-block').find_all('cite')[0]
+        malayalam_ref = malayalam_ref_elem.get_text(strip=True).replace('—', '') if malayalam_ref_elem else ""
+
+        english_verse_elem = soup.find('div', class_='bible-verse-block').find_all('blockquote')[1]
+        english_verse = english_verse_elem.get_text(strip=True).strip('"') if english_verse_elem else "" # Remove quotes
+
+        english_ref_elem = soup.find('div', class_='bible-verse-block').find_all('cite')[1]
+        english_ref = english_ref_elem.get_text(strip=True).replace('—', '') if english_ref_elem else ""
+
+        message_title_elem = soup.find('div', class_='message-section').find('h3')
+        message_title = message_title_elem.get_text(strip=True).replace(':', '') if message_title_elem else ""
+
         paragraphs = soup.find('div', class_='message-section').find_all('p')
         message_paragraph1 = paragraphs[0].get_text(strip=True) if len(paragraphs) > 0 else ""
         message_paragraph2 = paragraphs[1].get_text(strip=True) if len(paragraphs) > 1 else ""
 
         verse_data = {
-            "date": date_str_frontend, # Keep the frontend format for consistency
+            "date": date_str_frontend,
             "malayalam_verse": malayalam_verse,
             "malayalam_ref": malayalam_ref,
             "english_verse": english_verse,
@@ -492,6 +490,41 @@ def get_verse_content_by_date():
         print(f"Error fetching or parsing verse content for {date_str_frontend}: {e}")
         return jsonify({"success": False, "message": f"Failed to retrieve verse content: {str(e)}"}), 500
 
+# --- NEW ENDPOINT: Get the latest date a verse was added ---
+@app.route('/get_latest_verse_date', methods=['GET'])
+def get_latest_verse_date():
+    if repo is None:
+        return jsonify({"success": False, "message": "Backend not connected to GitHub repository. Check environment variables."}), 500
+
+    latest_date_obj = None
+    try:
+        contents = repo.get_contents(GITHUB_FILE_PATH_PREFIX, ref="main")
+        for content in contents:
+            if content.type == 'file' and content.name.endswith('.html'):
+                match = FILE_DATE_PATTERN.match(content.name)
+                if match:
+                    iso_date_str = match.group(1)
+                    try:
+                        current_date_obj = datetime.strptime(iso_date_str, "%Y-%m-%d")
+                        if latest_date_obj is None or current_date_obj > latest_date_obj:
+                            latest_date_obj = current_date_obj
+                    except ValueError:
+                        print(f"Warning: Could not parse date from filename: {content.name}")
+        
+        if latest_date_obj:
+            formatted_latest_date = latest_date_obj.strftime("%B %d, %Y")
+            return jsonify({"success": True, "latest_date": formatted_latest_date}), 200
+        else:
+            return jsonify({"success": True, "latest_date": None, "message": "No verses found yet."}), 200
+
+    except UnknownObjectException:
+        # Directory does not exist yet, so no verses
+        return jsonify({"success": True, "latest_date": None, "message": "No verses found yet."}), 200
+    except Exception as e:
+        print(f"GitHub API Error when fetching latest date: {e}")
+        return jsonify({"success": False, "message": f"Failed to fetch latest verse date: {str(e)}"}), 500
+
+
 # --- Health Check Endpoint ---
 @app.route('/')
 def health_check():
@@ -505,5 +538,4 @@ def health_check():
         return jsonify({"status": "MACE EU Verse Generator Backend is running, but GitHub client not initialized (check env vars)."}), 500
 
 if __name__ == '__main__':
-    # For local development, ensure you have your .env file with GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME
     app.run(debug=True, host='0.0.0.0', port=5000)
