@@ -3,3 +3,4 @@ PyGithub
 python-dotenv
 gunicorn
 flask-cors
+beautifulsoup4
