@@ -2,9 +2,10 @@ import os
 import re # Import regex for parsing filenames
 from datetime import datetime
 from flask import Flask, request, jsonify
-from github import Github, InputGitTreeElement
+from github import Github, InputGitTreeElement, UnknownObjectException # Import UnknownObjectException
 from dotenv import load_dotenv
 from flask_cors import CORS
+from bs4 import BeautifulSoup # Import BeautifulSoup for HTML parsing
 
 # Load environment variables from .env for local development
 load_dotenv()
@@ -16,7 +17,7 @@ CORS(app) # Enable CORS for all routes by default
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO_OWNER = os.getenv("GITHUB_REPO_OWNER")
 GITHUB_REPO_NAME = os.getenv("GITHUB_REPO_NAME")
-GITHUB_FILE_PATH_PREFIX = "daily-verses" 
+GITHUB_FILE_PATH_PREFIX = "daily-verses"
 
 # Initialize GitHub API client
 g = None
@@ -354,7 +355,7 @@ def generate_and_upload_verse():
     try:
         date_obj = datetime.strptime(manual_date_str, "%B %d, %Y")
     except ValueError:
-        return jsonify({"success": False, "message": f"Invalid date format: {manual_date_str}. Expected 'Month Day, Year'."}), 400
+        return jsonify({"success": False, "message": f"Invalid date format: {manual_date_str}. Expected 'Month DD, YYYY'."}), 400
 
     display_date = date_obj.strftime("%B %d, %Y")
     file_date_format = date_obj.strftime("%Y-%m-%d")
@@ -369,10 +370,12 @@ def generate_and_upload_verse():
                 "success": False,
                 "message": f"A daily verse for {display_date} already exists. Please choose another date."
             }), 409 # 409 Conflict status code for duplicate resource
+        except UnknownObjectException: # Specific exception for file not found
+            pass # File not found, proceed to create it
         except Exception as e:
-            # If "Not Found" error, it means the file doesn't exist, and we can proceed.
-            if "Not Found" not in str(e):
-                raise e # Re-raise other unexpected GitHub API errors
+            # Re-raise other unexpected GitHub API errors
+            print(f"GitHub API Error checking file existence: {e}")
+            raise e
 
         # If we reach here, the file does NOT exist, so proceed to create it.
         # Generate the HTML content
@@ -426,12 +429,68 @@ def get_existing_verse_dates():
                         print(f"Warning: Could not parse date from filename: {content.name}")
         return jsonify({"success": True, "dates": existing_dates}), 200
 
+    except UnknownObjectException: # Directory does not exist yet
+        return jsonify({"success": True, "dates": []}), 200
     except Exception as e:
-        if "Not Found" in str(e):
-            # Directory does not exist yet, so no existing dates
-            return jsonify({"success": True, "dates": []}), 200
         print(f"GitHub API Error when fetching existing dates: {e}")
         return jsonify({"success": False, "message": f"Failed to fetch existing dates from GitHub: {str(e)}"}), 500
+
+# --- NEW ENDPOINT: Get verse content by date ---
+@app.route('/get_verse_content_by_date', methods=['GET'])
+def get_verse_content_by_date():
+    if repo is None:
+        return jsonify({"success": False, "message": "Backend not connected to GitHub repository. Check environment variables."}), 500
+
+    date_str_frontend = request.args.get('date') # e.g., "July 21, 2025"
+    if not date_str_frontend:
+        return jsonify({"success": False, "message": "Date parameter is required"}), 400
+
+    try:
+        # Convert frontend date string to YYYY-MM-DD format for filename
+        date_obj = datetime.strptime(date_str_frontend, "%B %d, %Y")
+        file_date_format = date_obj.strftime("%Y-%m-%d")
+        github_file_path = f"{GITHUB_FILE_PATH_PREFIX}/bible_verse_{file_date_format}.html"
+    except ValueError:
+        return jsonify({"success": False, "message": f"Invalid date format: {date_str_frontend}. Expected 'Month DD, YYYY'."}), 400
+
+    try:
+        # Fetch the content of the HTML file from GitHub
+        file_content_obj = repo.get_contents(github_file_path, ref="main")
+        html_content = file_content_obj.decoded_content.decode('utf-8')
+
+        # Parse the HTML content using BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Extract data based on your HTML structure
+        # Note: This is highly dependent on your HTML_TEMPLATE structure.
+        # If your template changes, this parsing logic must also change.
+        malayalam_verse = soup.find('div', class_='bible-verse-block').find_all('blockquote')[0].get_text(strip=True)
+        malayalam_ref = soup.find('div', class_='bible-verse-block').find_all('cite')[0].get_text(strip=True).replace('—', '')
+        english_verse = soup.find('div', class_='bible-verse-block').find_all('blockquote')[1].get_text(strip=True).strip('"') # Remove quotes
+        english_ref = soup.find('div', class_='bible-verse-block').find_all('cite')[1].get_text(strip=True).replace('—', '')
+        message_title = soup.find('div', class_='message-section').find('h3').get_text(strip=True).replace(':', '')
+        paragraphs = soup.find('div', class_='message-section').find_all('p')
+        message_paragraph1 = paragraphs[0].get_text(strip=True) if len(paragraphs) > 0 else ""
+        message_paragraph2 = paragraphs[1].get_text(strip=True) if len(paragraphs) > 1 else ""
+
+        verse_data = {
+            "date": date_str_frontend, # Keep the frontend format for consistency
+            "malayalam_verse": malayalam_verse,
+            "malayalam_ref": malayalam_ref,
+            "english_verse": english_verse,
+            "english_ref": english_ref,
+            "message_title": message_title,
+            "message_paragraph1": message_paragraph1,
+            "message_paragraph2": message_paragraph2,
+        }
+
+        return jsonify({"success": True, "verse": verse_data}), 200
+
+    except UnknownObjectException:
+        return jsonify({"success": False, "message": f"No verse found for {date_str_frontend}"}), 404
+    except Exception as e:
+        print(f"Error fetching or parsing verse content for {date_str_frontend}: {e}")
+        return jsonify({"success": False, "message": f"Failed to retrieve verse content: {str(e)}"}), 500
 
 # --- Health Check Endpoint ---
 @app.route('/')
@@ -446,4 +505,5 @@ def health_check():
         return jsonify({"status": "MACE EU Verse Generator Backend is running, but GitHub client not initialized (check env vars)."}), 500
 
 if __name__ == '__main__':
+    # For local development, ensure you have your .env file with GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME
     app.run(debug=True, host='0.0.0.0', port=5000)
